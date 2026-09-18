@@ -196,12 +196,12 @@ export default function Upload() {
                   className={clsx(
                     'inline-flex items-center gap-1.5 text-xs font-medium rounded-full px-2.5 py-1 border transition-colors',
                     hasDirectIds
-                      ? 'text-red-700 bg-red-50 border-red-200 hover:bg-red-100'
+                      ? 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100'
                       : 'text-clinical-700 bg-clinical-50 border-clinical-200 hover:bg-clinical-100',
                   )}
                 >
                   {hasDirectIds
-                    ? <><ShieldAlert className="w-3 h-3" />{pc.direct_identifiers.length} identifier{pc.direct_identifiers.length > 1 ? 's' : ''} found</>
+                    ? <><ShieldCheck className="w-3 h-3" />{pc.direct_identifiers.length} removed before modeling</>
                     : <><ShieldCheck className="w-3 h-3" />Screened ✓</>
                   }
                 </button>
@@ -332,33 +332,42 @@ export default function Upload() {
             )}
           </div>
 
-          {/* ── Direct-identifier warning (only when real identifiers exist) ── */}
+          {/* ── Direct identifiers: acceptance notice (not rejection) ── */}
           {hasDirectIds && (
-            <div className="card border-red-200 bg-red-50 p-4 flex gap-3">
-              <ShieldAlert className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
-              <p className="text-sm text-red-700">
-                <strong>Direct personal identifiers excluded from modeling:</strong>{' '}
-                <span className="font-mono">{pc.direct_identifiers.join(', ')}</span>.{' '}
-                These directly identify individuals. This screening is not a formal privacy audit.
-              </p>
+            <div className="card border-blue-200 bg-blue-50 p-4 flex gap-3">
+              <ShieldCheck className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-blue-800">
+                  Potentially identifying columns detected — automatically removed before modeling
+                </p>
+                <p className="text-sm text-blue-700 mt-1">
+                  The uploaded dataset contains personal identifiers:{' '}
+                  <span className="font-mono">{pc.direct_identifiers.join(', ')}</span>.{' '}
+                  These columns are <strong>automatically removed from the modeling dataset</strong>{' '}
+                  before synthetic-data generation. They are never passed to CTGAN and never appear
+                  in the synthetic output. Identifiers are removed or pseudonymized before modeling —
+                  this does not guarantee complete anonymization.
+                </p>
+              </div>
             </div>
           )}
 
-          {/* ── Longitudinal notice (only when linkage key detected, no direct ids) ── */}
-          {!hasDirectIds && hasLinkageKeys && (
+          {/* ── Longitudinal linkage notice ── */}
+          {hasLinkageKeys && (
             <div className="card border-purple-200 bg-purple-50 p-4 flex gap-3">
               <Link className="w-4 h-4 text-purple-500 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm font-semibold text-purple-800">
-                  {isLongitudinal ? 'Longitudinal structure detected' : 'Patient linkage key detected'}
+                  {isLongitudinal ? 'Longitudinal linkage detected' : 'Patient linkage key detected'}
                 </p>
                 <p className="text-sm text-purple-700 mt-0.5">
                   Linkage key: <span className="font-mono">{pc.longitudinal_linkage_keys.join(', ')}</span>.{' '}
                   {isLongitudinal && lon
                     ? `${lon.unique_subjects.toLocaleString()} patients · ${lon.avg_obs_per_subject} observations/patient average. `
                     : ''}
-                  This key is used only to group observations and is excluded from synthetic-data modeling.
-                  Original IDs will never appear in the synthetic output.
+                  Patient-level identifiers are pseudonymized internally to preserve longitudinal
+                  timeline grouping. Original identifiers are not used by the synthetic-data model
+                  and will never appear in the synthetic output.
                 </p>
               </div>
             </div>

@@ -200,10 +200,17 @@ def preprocess(
 
     # Server-side safety: ensure neither direct identifiers nor longitudinal
     # linkage keys slip into the modeling columns, regardless of what the
-    # frontend sent.
+    # frontend sent.  Both categories are excluded from modeling.
     classification = classify_all_columns(df)
     must_exclude = set(classification["excluded_from_modeling"])  # direct + linkage keys
     approved_columns = [c for c in approved_columns if c not in must_exclude]
+
+    if not approved_columns:
+        raise HTTPException(
+            400,
+            "No modeling columns remain after removing direct personal identifiers "
+            "and linkage keys. Please review the column selection.",
+        )
 
     missing_cols = [c for c in approved_columns if c not in df.columns]
     if missing_cols:
@@ -229,6 +236,7 @@ def preprocess(
     record.status               = "preprocessed"
     db.commit()
 
+    removed_identifiers = sorted(must_exclude & set(df.columns))
     return {
         "dataset_id": dataset_id,
         "rows_before": summary["rows_before"],
@@ -237,5 +245,6 @@ def preprocess(
         "duplicates_removed": summary["duplicates_removed"],
         "columns_excluded":  summary["columns_excluded"],
         "columns_included":  summary["columns_included"],
+        "identifiers_removed": removed_identifiers,
         "status": "preprocessed",
     }

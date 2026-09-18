@@ -47,6 +47,51 @@ def _make_synthesizer(model_name: str, metadata, epochs: int):
         return GaussianCopulaSynthesizer(metadata), "GaussianCopula"
 
 
+def _is_direct_identifier(col: str) -> bool:
+    """
+    Fast column-name check — returns True if this column is a direct personal
+    identifier that must be stripped before any modeling.
+    Mirrors _DIRECT_ID_EXACT + partial patterns from data_processing.py.
+    """
+    import re
+    norm = col.lower()
+    norm = re.sub(r"[^a-z0-9]+", "_", norm)
+    norm = re.sub(r"_+", "_", norm).strip("_")
+
+    _EXACT = {
+        "name", "patient_name", "patientname", "full_name", "fullname",
+        "first_name", "firstname", "last_name", "lastname",
+        "patient_full_name", "patient_first_name", "patient_last_name",
+        "aadhaar", "aadhaar_number", "ssn", "social_security_number",
+        "social_security", "passport_number", "passport",
+        "driver_license", "drivers_license", "driving_license", "license_number",
+        "national_id", "nationalid",
+        "medical_record_number", "mrn", "medical_record_no",
+        "hospital_id", "hospitalid",
+        "email", "email_address", "e_mail",
+        "phone", "phone_number", "mobile", "mobile_number",
+        "telephone", "telephone_number", "fax", "fax_number",
+        "address", "home_address", "street_address", "postal_address",
+        "street", "street_name",
+        "credit_card", "creditcard", "bank_account", "bankaccount",
+        "insurance_id", "insuranceid", "nhs_number", "nhs",
+        "health_id", "healthid",
+        "ip_address", "ip", "mac_address", "mac",
+        "photo", "photo_url", "image", "face_image",
+        "latitude", "longitude", "gps",
+    }
+    if norm in _EXACT:
+        return True
+
+    # Partial patterns: phone_number, fax_number, patient_name variants
+    _PARTIAL = [
+        r"_?number$",
+        r"^patient_?name$",
+        r"^patient_?identifier$",
+    ]
+    return any(re.search(p, norm) for p in _PARTIAL)
+
+
 def _is_linkage_key(col: str) -> bool:
     """
     Fast column-name check (no data scanning) — returns True if this column
@@ -88,32 +133,50 @@ def _is_linkage_key(col: str) -> bool:
 
 def _prepare_for_sdv(source_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Transform the preprocessed DataFrame into the form SDV/CTGAN expects:
-    - datetime64 columns → <col>_ordinal (integer) + original dropped
-    - object columns that parse as dates → ordinal integer
-    - object columns that are actually numeric → float
-    - remaining object (categorical) columns → kept as-is for SDV
-    - all-null columns dropped
+    Transform the preprocessed DataFrame into the form SDV/CTGAN expects.
 
-    This transformation is also saved as the 'source_for_validation' CSV
-    so that validation compares data in the same dtype/scale space as the
-    synthetic output.
+    Privacy pre-processing (steps 0a and 0b) runs first so that:
+      - Direct personal identifiers (names, emails, MRNs …) are dropped.
+      - Longitudinal linkage keys (patient_id …) are replaced with an internal
+        integer pseudonym (timeline_id) and then also dropped before modeling.
+        The mapping is used only for grouping within this call and is never
+        persisted or returned.
+
+    Remaining transforms:
+      - datetime64 columns → <col>_ordinal (integer) + original dropped
+      - object columns that parse as dates → ordinal integer
+      - object columns that are numbers stored as strings → float
+      - all-null columns dropped
     """
     df = source_df.copy()
 
-    # 0. Strip longitudinal linkage keys — they must never be CTGAN features.
-    #    This is a fast column-name check (no data scanning).
-    #    The preprocess route already excludes these, but this is a safety net
-    #    in case an old preprocessed file reaches generation without the strip.
+    # ── 0a. Strip direct personal identifiers ────────────────────────────────
+    # Names, emails, phones, MRNs, addresses etc. must never reach CTGAN.
+    direct_id_cols = [c for c in df.columns if _is_direct_identifier(c)]
+    if direct_id_cols:
+        logger.info("Removing direct personal identifiers before SDV: %s", direct_id_cols)
+        df = df.drop(columns=direct_id_cols)
+
+    # ── 0b. Pseudonymize longitudinal linkage keys ────────────────────────────
+    # Replace the original linkage-key values with a compact integer index so
+    # that the grouping structure is preserved internally while the original IDs
+    # are never seen by CTGAN.  The integer column is then also dropped before
+    # training — CTGAN only sees the clinical features.
     linkage_cols = [c for c in df.columns if _is_linkage_key(c)]
     if linkage_cols:
-        import logging
-        logging.getLogger("sh405.generation").info(
-            "Stripping longitudinal linkage keys before SDV: %s", linkage_cols
+        key_col = linkage_cols[0]  # use first detected key
+        logger.info(
+            "Pseudonymizing longitudinal linkage key '%s' before SDV (original values discarded)",
+            key_col,
         )
-        df = df.drop(columns=linkage_cols)
+        # Build integer mapping: original value → sequential integer
+        unique_vals = df[key_col].dropna().unique()
+        _mapping = {v: i + 1 for i, v in enumerate(unique_vals)}
+        df["_timeline_id"] = df[key_col].map(_mapping)
+        # Drop all linkage key columns — _timeline_id is internal only and also dropped
+        df = df.drop(columns=linkage_cols + ["_timeline_id"])
 
-    # 1. Convert existing datetime64 columns to ordinal ints
+    # ── 1. Convert existing datetime64 columns to ordinal ints ───────────────
     date_cols_to_drop = []
     for col in list(df.columns):
         if pd.api.types.is_datetime64_any_dtype(df[col]):
@@ -124,7 +187,7 @@ def _prepare_for_sdv(source_df: pd.DataFrame) -> pd.DataFrame:
     if date_cols_to_drop:
         df = df.drop(columns=date_cols_to_drop)
 
-    # 2. Object columns that look like date strings → ordinal int
+    # ── 2. Object columns that look like date strings → ordinal int ───────────
     for col in list(df.columns):
         if df[col].dtype == object:
             sample = df[col].dropna().head(20).astype(str)
@@ -139,16 +202,14 @@ def _prepare_for_sdv(source_df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 pass
 
-    # 3. Object columns that are actually numbers stored as strings → float
+    # ── 3. Object columns that are numbers stored as strings → float ──────────
     for col in list(df.columns):
         if df[col].dtype == object:
             coerced = pd.to_numeric(df[col], errors="coerce")
-            non_null_frac = coerced.notna().mean()
-            # Only convert if ≥ 90 % parse as numbers (avoid mangling real categoricals)
-            if non_null_frac >= 0.9:
+            if coerced.notna().mean() >= 0.9:
                 df[col] = coerced
 
-    # 4. Drop all-null columns
+    # ── 4. Drop all-null columns ──────────────────────────────────────────────
     df = df.dropna(axis=1, how="all")
 
     return df
@@ -272,14 +333,35 @@ def run_generation(
 
         synthetic_df = synthetic_df.head(num_records).reset_index(drop=True)
 
-        # ── 7. Save synthetic output ──────────────────────────────────────────
+        # ── 7. Add synthetic patient IDs if a linkage key was in the source ──
+        # Detect whether the original preprocessed CSV had a linkage key.
+        # If so, assign new SYN-XXXXXX identifiers to the synthetic output.
+        # Original IDs are never reused.
+        try:
+            original_cols = list(pd.read_csv(source_path, nrows=0).columns)
+            had_linkage_key = any(_is_linkage_key(c) for c in original_cols)
+        except Exception:
+            had_linkage_key = False
+
+        if had_linkage_key:
+            synthetic_df.insert(
+                0,
+                "SyntheticPatientID",
+                [f"SYN-{i+1:06d}" for i in range(len(synthetic_df))],
+            )
+            logger.info(
+                "Assigned SyntheticPatientID (SYN-000001…SYN-%06d) to synthetic output",
+                len(synthetic_df),
+            )
+
+        # ── 8. Save synthetic output ──────────────────────────────────────────
         _progress(90, "Saving synthetic dataset…")
         output_path = os.path.join(settings.EXPORT_DIR, f"{gen_id}_synthetic.csv")
         synthetic_df.to_csv(output_path, index=False)
 
         elapsed = time.time() - t_start
 
-        # ── 8. Finalise record ────────────────────────────────────────────────
+        # ── 9. Finalise record ────────────────────────────────────────────────
         record = db.get(GenerationRecord, gen_id)
         record.status = "done"
         record.progress = 100
