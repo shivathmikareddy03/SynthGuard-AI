@@ -333,10 +333,11 @@ def run_generation(
 
         synthetic_df = synthetic_df.head(num_records).reset_index(drop=True)
 
-        # ── 7. Add synthetic patient IDs if a linkage key was in the source ──
+        # ── 7. Add synt_id if a linkage key was in the source ───────────────
         # Detect whether the original preprocessed CSV had a linkage key.
-        # If so, assign new SYN-XXXXXX identifiers to the synthetic output.
-        # Original IDs are never reused.
+        # If so, assign new SYN-XXXXXX values as the synt_id column.
+        # synt_id is a synthetic/pseudonymous identifier — original IDs are
+        # never reused and never appear in the output.
         try:
             original_cols = list(pd.read_csv(source_path, nrows=0).columns)
             had_linkage_key = any(_is_linkage_key(c) for c in original_cols)
@@ -346,11 +347,11 @@ def run_generation(
         if had_linkage_key:
             synthetic_df.insert(
                 0,
-                "SyntheticPatientID",
+                "synt_id",
                 [f"SYN-{i+1:06d}" for i in range(len(synthetic_df))],
             )
             logger.info(
-                "Assigned SyntheticPatientID (SYN-000001…SYN-%06d) to synthetic output",
+                "Assigned synt_id (SYN-000001…SYN-%06d) to synthetic output",
                 len(synthetic_df),
             )
 
