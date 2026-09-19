@@ -322,12 +322,25 @@ def run_generation(
         _progress(80, "Applying cohort requirements…")
         cohort_results = {}
         if cohort_config:
-            synthetic_df, cohort_results = apply_cohort_requirements(
-                synth_df=synthetic_pool,
-                source_df=source_df,
-                num_records=num_records,
-                cohort_config=cohort_config,
-            )
+            dynamic_reqs = cohort_config.get("_dynamic_requirements")
+            if dynamic_reqs:
+                # New dataset-driven path
+                from app.services.cohort import apply_dynamic_cohort
+                synthetic_df, cohort_report = apply_dynamic_cohort(
+                    synth_df=synthetic_pool,
+                    num_records=num_records,
+                    requirements=dynamic_reqs,
+                )
+                cohort_results = {"requirements": cohort_report}
+            else:
+                # Legacy path
+                from app.services.cohort import apply_cohort_requirements
+                synthetic_df, cohort_results = apply_cohort_requirements(
+                    synth_df=synthetic_pool,
+                    source_df=source_df,
+                    num_records=num_records,
+                    cohort_config=cohort_config,
+                )
         else:
             synthetic_df = synthetic_pool.head(num_records)
 

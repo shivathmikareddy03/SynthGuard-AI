@@ -7,6 +7,7 @@ import type {
   PreviewResponse,
   ValidationReport,
   PrivacyReport,
+  CohortProfileResponse,
 } from '../types'
 
 const BASE = '/api'
@@ -32,6 +33,11 @@ export async function uploadDemoDataset(): Promise<DatasetProfile> {
 
 export async function getDatasetProfile(datasetId: string): Promise<DatasetProfile> {
   const { data } = await client.get(`/dataset/${datasetId}/profile`)
+  return data
+}
+
+export async function getCohortProfile(datasetId: string): Promise<CohortProfileResponse> {
+  const { data } = await client.get(`/dataset/${datasetId}/cohort-profile`)
   return data
 }
 

@@ -61,6 +61,61 @@ export interface PreprocessingResult {
 
 // ── Generation ───────────────────────────────────────────────────────────────
 
+// ── Dynamic cohort types (new dataset-driven API) ─────────────────────────
+
+export type CohortOperator =
+  | 'greater_than' | 'gt'
+  | 'less_than'    | 'lt'
+  | 'gte' | 'greater_than_or_equal'
+  | 'lte' | 'less_than_or_equal'
+  | 'equal' | 'eq'
+  | 'between'
+  | 'in_values'
+  | 'not_equal' | 'ne'
+
+export type ColumnKind = 'numerical' | 'binary' | 'ordinal' | 'categorical'
+
+export interface CohortColumnProfile {
+  name: string
+  dtype: string
+  kind: ColumnKind
+  // numerical
+  min?: number | null
+  max?: number | null
+  mean?: number | null
+  unique_count?: number
+  // categorical / binary / ordinal
+  unique_values?: string[]
+  ordinal_order?: string[]
+}
+
+export interface CohortProfileResponse {
+  dataset_id: string
+  columns: CohortColumnProfile[]
+  total_columns: number
+}
+
+export interface CohortRequirement {
+  id: string            // client-side UUID for React keys
+  feature: string
+  operator: CohortOperator
+  value: string | number | [number, number] | string[]
+  target_proportion: number   // 0–1
+  label?: string
+}
+
+export interface CohortRequirementResult {
+  feature: string
+  operator: string
+  value: unknown
+  label: string
+  requested_pct: number
+  generated_pct: number | null
+  diff_pct: number | null
+  status: 'pass' | 'warn' | 'column_missing'
+}
+
+// Legacy cohort config (kept for backward compatibility)
 export interface CohortConfig {
   older_patients_pct?: number
   diabetic_pct?: number
@@ -75,7 +130,8 @@ export interface GenerateRequest {
   num_records: number
   model: 'CTGAN' | 'TVAE' | 'GAUSSIANCOPULA'
   epochs?: number
-  cohort?: CohortConfig
+  cohort?: CohortConfig                // legacy
+  requirements?: Omit<CohortRequirement, 'id'>[]  // new dynamic
 }
 
 export interface GenerationStatus {

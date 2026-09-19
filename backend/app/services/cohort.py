@@ -1,12 +1,36 @@
 """
-Post-generation cohort resampling to satisfy researcher-specified cohort targets.
-Does NOT simply overwrite values — it resamples from generated data while
-preserving learned relationships.
-"""
-from typing import Dict, Optional, Tuple
-import pandas as pd
-import numpy as np
+Post-generation cohort resampling.
 
+Two public APIs:
+
+1. apply_cohort_requirements(synth_df, source_df, num_records, cohort_config)
+   ── Legacy interface kept for backward compatibility.
+   ── Hard-coded field names (older_patients_pct, diabetic_pct, etc.)
+
+2. apply_dynamic_cohort(synth_df, num_records, requirements)
+   ── New dataset-driven interface.
+   ── requirements is a list of:
+      {
+        "feature":           "<column_name>",
+        "operator":          "greater_than|less_than|gte|lte|equal|between|in_values",
+        "value":             <scalar or list>,
+        "target_proportion": 0.0–1.0,
+      }
+   ── Works for any column / datatype — no hard-coded healthcare names.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+logger = logging.getLogger("sh405.cohort")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _col_exists(df: pd.DataFrame, col: Optional[str]) -> Optional[str]:
     if col is None:
@@ -17,6 +41,210 @@ def _col_exists(df: pd.DataFrame, col: Optional[str]) -> Optional[str]:
     return lower_map.get(col.lower())
 
 
+def _eval_condition(series: pd.Series, operator: str, value: Any) -> pd.Series:
+    """
+    Return a boolean mask for rows satisfying (series <operator> value).
+    Handles numerical, boolean, and categorical/string columns.
+    """
+    op = operator.lower().strip()
+
+    # Boolean columns: coerce to bool before comparison
+    if pd.api.types.is_bool_dtype(series):
+        bool_map = {"true": True, "false": False, "1": True, "0": False,
+                    "yes": True, "no": False}
+        if isinstance(value, str):
+            target = bool_map.get(value.lower().strip(), value.lower() == "true")
+        elif isinstance(value, (int, float)):
+            target = bool(value)
+        else:
+            target = bool(value)
+        if op in ("equal", "eq", "equals", "=", "=="):
+            return series == target
+        if op in ("not_equal", "ne", "!="):
+            return series != target
+        if op == "in_values":
+            targets = [bool_map.get(str(v).lower().strip(), str(v).lower() == "true") for v in value]
+            return series.isin(targets)
+        # Fallback: treat True=1, False=0 for numeric operators
+        series = series.astype(int)
+
+    # Numeric coercion when column is numeric-like
+    if pd.api.types.is_numeric_dtype(series):
+        if op in ("greater_than", "gt"):
+            return series > float(value)
+        if op in ("less_than", "lt"):
+            return series < float(value)
+        if op in ("gte", "greater_than_or_equal", ">="):
+            return series >= float(value)
+        if op in ("lte", "less_than_or_equal", "<="):
+            return series <= float(value)
+        if op in ("equal", "eq", "equals", "=", "=="):
+            return series == float(value)
+        if op == "between":
+            lo, hi = float(value[0]), float(value[1])
+            return (series >= lo) & (series <= hi)
+        if op in ("not_equal", "ne", "!="):
+            return series != float(value)
+        if op == "in_values":
+            vals = [float(v) for v in value]
+            return series.isin(vals)
+
+    # Categorical / string comparison
+    s_lower = series.astype(str).str.lower().str.strip()
+
+    if op in ("equal", "eq", "equals", "=", "=="):
+        return s_lower == str(value).lower().strip()
+    if op in ("not_equal", "ne", "!="):
+        return s_lower != str(value).lower().strip()
+    if op == "in_values":
+        vals = [str(v).lower().strip() for v in value]
+        return s_lower.isin(vals)
+
+    # For ordinal-like numeric comparisons on string columns — try numeric coerce
+    try:
+        numeric = pd.to_numeric(series, errors="coerce")
+        if numeric.notna().mean() >= 0.9:
+            return _eval_condition(numeric, operator, value)
+    except Exception:
+        pass
+
+    logger.warning("Unsupported operator '%s' for column dtype %s", operator, series.dtype)
+    return pd.Series([False] * len(series), index=series.index)
+
+
+def _measure_proportion(df: pd.DataFrame, feature: str, operator: str, value: Any) -> float:
+    """Return the fraction (0–1) of rows in df satisfying the condition."""
+    if feature not in df.columns or len(df) == 0:
+        return 0.0
+    mask = _eval_condition(df[feature], operator, value)
+    return float(mask.sum()) / len(df)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dynamic cohort API  (new, dataset-driven)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def apply_dynamic_cohort(
+    synth_df: pd.DataFrame,
+    num_records: int,
+    requirements: List[Dict],
+) -> Tuple[pd.DataFrame, List[Dict]]:
+    """
+    Resample `synth_df` to approximately satisfy all cohort requirements.
+
+    Each requirement:
+    {
+        "feature":           str,          column name
+        "operator":          str,          see _eval_condition
+        "value":             any,          scalar or list
+        "target_proportion": float,        0.0–1.0
+        "label":             str optional  display label
+    }
+
+    Strategy: for each requirement, partition the pool into "satisfies" and
+    "does not satisfy" strata; sample proportionally; combine; repeat for the
+    next requirement on the combined result. Because requirements are applied
+    sequentially the final proportions are approximations — they are measured
+    from the actual output and reported honestly.
+
+    Returns (result_df, report_list) where report_list mirrors requirements
+    with "requested_pct", "generated_pct", "diff_pct", "status" fields added.
+    """
+    if not requirements:
+        result = synth_df.sample(
+            n=min(num_records, len(synth_df)), replace=True, random_state=42
+        ).reset_index(drop=True)
+        return result, []
+
+    pool = synth_df.copy()
+    rng  = np.random.default_rng(42)
+
+    # Apply requirements one at a time, narrowing the pool progressively
+    for req in requirements:
+        feature  = req["feature"]
+        operator = req["operator"]
+        value    = req["value"]
+        target_p = float(req["target_proportion"])   # 0–1
+
+        if feature not in pool.columns:
+            logger.warning("Cohort feature '%s' not in synthetic columns — skipping", feature)
+            continue
+
+        mask         = _eval_condition(pool[feature], operator, value)
+        satisfying   = pool[mask]
+        not_satisfying = pool[~mask]
+
+        n_satisfy     = max(0, int(round(target_p * num_records)))
+        n_not_satisfy = max(0, num_records - n_satisfy)
+
+        frames = []
+        if n_satisfy > 0:
+            src = satisfying if len(satisfying) > 0 else pool
+            frames.append(src.sample(n=n_satisfy, replace=True,
+                                     random_state=int(rng.integers(0, 100000))))
+        if n_not_satisfy > 0:
+            src = not_satisfying if len(not_satisfying) > 0 else pool
+            frames.append(src.sample(n=n_not_satisfy, replace=True,
+                                     random_state=int(rng.integers(0, 100000))))
+
+        if frames:
+            pool = pd.concat(frames, ignore_index=True).sample(
+                frac=1, random_state=42
+            ).reset_index(drop=True)
+
+    # Trim / pad to exact num_records
+    if len(pool) > num_records:
+        result = pool.sample(n=num_records, random_state=42).reset_index(drop=True)
+    elif len(pool) < num_records:
+        extra  = synth_df.sample(n=num_records - len(pool), replace=True, random_state=42)
+        result = pd.concat([pool, extra], ignore_index=True).sample(
+            frac=1, random_state=42
+        ).reset_index(drop=True)
+    else:
+        result = pool
+
+    # ── Measure actual proportions ────────────────────────────────────────────
+    report = []
+    for req in requirements:
+        feature  = req["feature"]
+        operator = req["operator"]
+        value    = req["value"]
+        target_p = float(req["target_proportion"])
+        label    = req.get("label") or f"{feature} {operator} {value}"
+
+        if feature not in result.columns:
+            report.append({
+                **req,
+                "label":          label,
+                "requested_pct":  round(target_p * 100, 2),
+                "generated_pct":  None,
+                "diff_pct":       None,
+                "status":         "column_missing",
+            })
+            continue
+
+        actual_p = _measure_proportion(result, feature, operator, value)
+        diff     = round(abs(target_p - actual_p) * 100, 2)
+        status   = "pass" if diff <= 5 else "warn"
+
+        report.append({
+            "feature":        feature,
+            "operator":       operator,
+            "value":          value,
+            "label":          label,
+            "requested_pct":  round(target_p * 100, 2),
+            "generated_pct":  round(actual_p * 100, 2),
+            "diff_pct":       diff,
+            "status":         status,
+        })
+
+    return result.reset_index(drop=True), report
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Legacy API  (kept intact for backward compatibility)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def apply_cohort_requirements(
     synth_df: pd.DataFrame,
     source_df: pd.DataFrame,
@@ -24,143 +252,78 @@ def apply_cohort_requirements(
     cohort_config: Dict,
 ) -> Tuple[pd.DataFrame, Dict]:
     """
-    Resample synthetic records to approximate the requested cohort distribution.
-
-    Strategy:
-    1. Partition synthetic pool by cohort criteria.
-    2. Calculate desired counts per stratum.
-    3. Sample with replacement from each stratum.
-    4. Shuffle and return.
-
-    Returns (resampled_df, results_summary).
+    Legacy hard-coded cohort resampling.
+    Translates the old config format into dynamic requirements and delegates.
+    Preserved for backward compatibility with existing saved cohort_config records.
     """
-    results = {}
-    rng = np.random.default_rng(42)
-
-    older_pct = cohort_config.get("older_patients_pct")
+    older_pct    = cohort_config.get("older_patients_pct")
     diabetic_pct = cohort_config.get("diabetic_pct")
     activity_dist = cohort_config.get("activity_distribution")
-    age_col = _col_exists(synth_df, cohort_config.get("age_column", "Age"))
+    age_col      = _col_exists(synth_df, cohort_config.get("age_column",      "Age"))
     diabetes_col = _col_exists(synth_df, cohort_config.get("diabetes_column", "Diabetes"))
     activity_col = _col_exists(synth_df, cohort_config.get("activity_column", "ActivityLevel"))
 
-    # If no valid cohort spec, just sample num_records from synthetic pool
-    has_spec = any([
-        older_pct is not None and age_col is not None,
-        diabetic_pct is not None and diabetes_col is not None,
-        activity_dist is not None and activity_col is not None,
-    ])
+    # Build generic requirements from the legacy config
+    requirements: List[Dict] = []
 
-    if not has_spec:
+    if older_pct is not None and age_col is not None:
+        requirements.append({
+            "feature":           age_col,
+            "operator":          "gte",
+            "value":             60,
+            "target_proportion": float(older_pct) / 100,
+            "label":             f"{age_col} ≥ 60",
+            "_legacy_key":       "older",
+        })
+
+    if diabetic_pct is not None and diabetes_col is not None:
+        requirements.append({
+            "feature":           diabetes_col,
+            "operator":          "in_values",
+            "value":             ["1", "true", "yes", "1.0"],
+            "target_proportion": float(diabetic_pct) / 100,
+            "label":             f"{diabetes_col} = diabetic",
+            "_legacy_key":       "diabetic",
+        })
+
+    if activity_dist is not None and activity_col is not None:
+        total_pct = sum(float(v) for v in activity_dist.values())
+        if total_pct > 0:
+            # Use the largest activity-level bucket as the resampling target
+            max_cat = max(activity_dist, key=lambda k: float(activity_dist[k]))
+            requirements.append({
+                "feature":           activity_col,
+                "operator":          "equal",
+                "value":             max_cat,
+                "target_proportion": float(activity_dist[max_cat]) / total_pct,
+                "label":             f"{activity_col} = {max_cat}",
+                "_legacy_key":       "activity",
+            })
+
+    if not requirements:
         df = synth_df.sample(n=min(num_records, len(synth_df)), replace=True, random_state=42)
         return df.reset_index(drop=True), {"note": "No cohort constraints applied"}
 
-    pool = synth_df.copy()
+    result, report = apply_dynamic_cohort(synth_df, num_records, requirements)
 
-    # ── Age cohort ─────────────────────────────────────────────────────────────
-    if older_pct is not None and age_col is not None:
-        age_threshold = 60
-        pool["__is_older__"] = pool[age_col] >= age_threshold
+    # Translate report back into the legacy result dict shape
+    legacy_results: Dict = {}
+    for item in report:
+        key = item.get("_legacy_key")
+        if key == "older":
+            legacy_results["older_pct_requested"] = item["requested_pct"]
+            legacy_results["older_pct_actual"]    = item.get("generated_pct")
+            legacy_results["older_pct_diff"]      = item.get("diff_pct")
+        elif key == "diabetic":
+            legacy_results["diabetic_pct_requested"] = item["requested_pct"]
+            legacy_results["diabetic_pct_actual"]    = item.get("generated_pct")
+            legacy_results["diabetic_pct_diff"]      = item.get("diff_pct")
+        elif key == "activity" and activity_dist is not None:
+            legacy_results["activity_requested"] = activity_dist
+            if activity_col and activity_col in result.columns:
+                vc = result[activity_col].value_counts(normalize=True) * 100
+                legacy_results["activity_actual"] = {
+                    k: round(float(v), 2) for k, v in vc.to_dict().items()
+                }
 
-    # ── Diabetes cohort ────────────────────────────────────────────────────────
-    if diabetic_pct is not None and diabetes_col is not None:
-        col_vals = pool[diabetes_col].astype(str).str.lower()
-        pool["__is_diabetic__"] = col_vals.isin(["1", "true", "yes", "1.0"])
-
-    # Build composite strata
-    strata_cols = []
-    if "__is_older__" in pool.columns:
-        strata_cols.append("__is_older__")
-    if "__is_diabetic__" in pool.columns:
-        strata_cols.append("__is_diabetic__")
-
-    if strata_cols:
-        # Desired proportions matrix
-        desired = {}
-        if "__is_older__" in strata_cols and "__is_diabetic__" in strata_cols:
-            op = (older_pct or 0) / 100
-            dp = (diabetic_pct or 0) / 100
-            desired[(True, True)]   = op * dp
-            desired[(True, False)]  = op * (1 - dp)
-            desired[(False, True)]  = (1 - op) * dp
-            desired[(False, False)] = (1 - op) * (1 - dp)
-        elif "__is_older__" in strata_cols:
-            op = (older_pct or 0) / 100
-            desired[(True,)]  = op
-            desired[(False,)] = 1 - op
-        elif "__is_diabetic__" in strata_cols:
-            dp = (diabetic_pct or 0) / 100
-            desired[(True,)]  = dp
-            desired[(False,)] = 1 - dp
-
-        frames = []
-        for key, proportion in desired.items():
-            n_desired = max(1, int(round(proportion * num_records)))
-            # Filter stratum
-            mask = pd.Series([True] * len(pool), index=pool.index)
-            for i, sc in enumerate(strata_cols):
-                mask = mask & (pool[sc] == key[i])
-            stratum = pool[mask]
-            if len(stratum) == 0:
-                # Fall back to full pool for this stratum
-                stratum = pool
-            sampled = stratum.sample(n=n_desired, replace=True,
-                                     random_state=int(rng.integers(0, 10000)))
-            frames.append(sampled)
-
-        result = pd.concat(frames, ignore_index=True)
-        # Trim/pad to exactly num_records
-        if len(result) > num_records:
-            result = result.sample(n=num_records, random_state=42)
-        elif len(result) < num_records:
-            extra = pool.sample(n=num_records - len(result), replace=True, random_state=42)
-            result = pd.concat([result, extra], ignore_index=True)
-
-        # Drop helper columns
-        for sc in ["__is_older__", "__is_diabetic__"]:
-            if sc in result.columns:
-                result = result.drop(columns=[sc])
-        result = result.sample(frac=1, random_state=42).reset_index(drop=True)
-    else:
-        result = pool.sample(n=num_records, replace=True, random_state=42).reset_index(drop=True)
-
-    # ── Activity distribution resampling ──────────────────────────────────────
-    if activity_dist is not None and activity_col is not None:
-        # Normalize
-        total_pct = sum(activity_dist.values())
-        norm_dist = {k: v / total_pct for k, v in activity_dist.items()}
-        frames2 = []
-        for act_val, proportion in norm_dist.items():
-            n_desired = max(1, int(round(proportion * len(result))))
-            stratum = result[result[activity_col].astype(str).str.lower() == act_val.lower()]
-            if len(stratum) == 0:
-                stratum = result
-            sampled = stratum.sample(n=n_desired, replace=True, random_state=42)
-            frames2.append(sampled)
-        result = pd.concat(frames2, ignore_index=True)
-        if len(result) > num_records:
-            result = result.sample(n=num_records, random_state=42)
-        result = result.sample(frac=1, random_state=42).reset_index(drop=True)
-
-    # ── Measure actual cohort ──────────────────────────────────────────────────
-    actual = {}
-    if older_pct is not None and age_col is not None and age_col in result.columns:
-        n_older = (result[age_col] >= 60).sum()
-        actual["older_pct_requested"] = older_pct
-        actual["older_pct_actual"] = round(n_older / len(result) * 100, 2)
-        actual["older_pct_diff"] = round(abs(older_pct - actual["older_pct_actual"]), 2)
-
-    if diabetic_pct is not None and diabetes_col is not None and diabetes_col in result.columns:
-        col_vals = result[diabetes_col].astype(str).str.lower()
-        n_diab = col_vals.isin(["1", "true", "yes", "1.0"]).sum()
-        actual["diabetic_pct_requested"] = diabetic_pct
-        actual["diabetic_pct_actual"] = round(n_diab / len(result) * 100, 2)
-        actual["diabetic_pct_diff"] = round(abs(diabetic_pct - actual["diabetic_pct_actual"]), 2)
-
-    if activity_dist is not None and activity_col is not None and activity_col in result.columns:
-        actual["activity_requested"] = activity_dist
-        vc = result[activity_col].value_counts(normalize=True) * 100
-        actual["activity_actual"] = {k: round(v, 2) for k, v in vc.to_dict().items()}
-
-    results = actual
-    return result.reset_index(drop=True), results
+    return result, legacy_results

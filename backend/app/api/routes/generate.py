@@ -61,6 +61,30 @@ def start_generation(body: dict, db: Session = Depends(get_db)):
                 raise HTTPException(400, "activity_distribution values must sum > 0.")
         cohort_config = cohort_raw
 
+    # ── New: generic dynamic cohort requirements ──────────────────────────────
+    dynamic_requirements = body.get("requirements")
+    if dynamic_requirements:
+        # Validate each requirement generically
+        for i, req in enumerate(dynamic_requirements):
+            if not isinstance(req, dict):
+                raise HTTPException(400, f"requirements[{i}] must be an object.")
+            if not req.get("feature"):
+                raise HTTPException(400, f"requirements[{i}].feature is required.")
+            if not req.get("operator"):
+                raise HTTPException(400, f"requirements[{i}].operator is required.")
+            if req.get("value") is None:
+                raise HTTPException(400, f"requirements[{i}].value is required.")
+            tp = req.get("target_proportion")
+            if tp is None:
+                raise HTTPException(400, f"requirements[{i}].target_proportion is required.")
+            if not (0.0 <= float(tp) <= 1.0):
+                raise HTTPException(400,
+                    f"requirements[{i}].target_proportion must be between 0 and 1 (got {tp}).")
+        # Store requirements inside cohort_config so run_generation can access them
+        if cohort_config is None:
+            cohort_config = {}
+        cohort_config["_dynamic_requirements"] = dynamic_requirements
+
     gen_record = create_generation_record(db, dataset_id, num_records, model, cohort_config)
 
     # Run in background thread (prototype approach; production would use a task queue)

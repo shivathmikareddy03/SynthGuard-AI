@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
-import { Cpu, ArrowRight, CheckCircle, AlertCircle, Users, Activity, ShieldAlert } from 'lucide-react'
+import { Cpu, ArrowRight, CheckCircle, AlertCircle, Activity, ShieldAlert } from 'lucide-react'
 import { startGeneration, getGenerationStatus, checkHealth, extractError, type HealthResponse } from '../services/api'
 import { useStore } from '../store'
 import ProgressBar from '../components/ProgressBar'
+import CohortBuilder, { CohortReport, validateRequirements } from '../components/CohortBuilder'
+import type { CohortRequirement, CohortRequirementResult } from '../types'
 
 const MODELS = [
-  { value: 'CTGAN',          label: 'CTGAN',          desc: 'Conditional GAN — best quality.' },
-  { value: 'TVAE',           label: 'TVAE',           desc: 'Variational autoencoder.' },
+  { value: 'CTGAN',          label: 'CTGAN',           desc: 'Conditional GAN — best quality.' },
+  { value: 'TVAE',           label: 'TVAE',            desc: 'Variational autoencoder.' },
   { value: 'GAUSSIANCOPULA', label: 'Gaussian Copula', desc: 'Fastest, simpler distributions.' },
 ]
 
@@ -19,13 +21,9 @@ export default function Generate() {
   const [numRecords, setNumRecords] = useState(10000)
   const [model, setModel]           = useState<'CTGAN' | 'TVAE' | 'GAUSSIANCOPULA'>('CTGAN')
   const [epochs, setEpochs]         = useState(300)
-  const [olderPct, setOlderPct]     = useState<number | ''>('')
-  const [diabeticPct, setDiabeticPct] = useState<number | ''>('')
-  const [actLow, setActLow]         = useState<number | ''>('')
-  const [actMed, setActMed]         = useState<number | ''>('')
-  const [actHigh, setActHigh]       = useState<number | ''>('')
+  const [requirements, setRequirements] = useState<CohortRequirement[]>([])
+  const [validationErrors, setValidationErrors] = useState<{ id: string; message: string }[]>([])
   const [submitting, setSubmitting] = useState(false)
-  // Only track SDV availability to show an error when it's missing — not as a status banner
   const [sdvMissing, setSdvMissing] = useState(false)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -64,45 +62,64 @@ export default function Generate() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!dataset || !preprocessing) { toast.error('Upload and preprocess a dataset first.'); return }
+
+    // Validate cohort requirements before submitting
+    if (requirements.length > 0) {
+      // We need column profiles for validation — fetch them lazily if needed
+      // For now do basic structural validation (the CohortBuilder already shows
+      // per-field errors; here we just block submission on any errors)
+      const errors = validationErrors
+      if (errors.length > 0) {
+        toast.error('Fix cohort requirement errors before generating.')
+        return
+      }
+    }
+
     setSubmitting(true)
     try {
-      const cohort: Record<string, unknown> = {
-        age_column: 'Age', diabetes_column: 'Diabetes', activity_column: 'ActivityLevel',
-      }
-      if (olderPct !== '')  cohort.older_patients_pct = Number(olderPct)
-      if (diabeticPct !== '') cohort.diabetic_pct = Number(diabeticPct)
-      if (actLow !== '' || actMed !== '' || actHigh !== '') {
-        cohort.activity_distribution = {
-          ...(actLow  !== '' ? { Low:    Number(actLow)  } : {}),
-          ...(actMed  !== '' ? { Medium: Number(actMed)  } : {}),
-          ...(actHigh !== '' ? { High:   Number(actHigh) } : {}),
-        }
-      }
-      const hasCohort = cohort.older_patients_pct !== undefined
-        || cohort.diabetic_pct !== undefined
-        || cohort.activity_distribution !== undefined
+      // Strip client-side 'id' field — backend doesn't need it
+      const reqs = requirements.length > 0
+        ? requirements.map(({ id: _id, ...rest }) => rest)
+        : undefined
 
       const res = await startGeneration({
-        dataset_id: dataset.id,
+        dataset_id:  dataset.id,
         num_records: numRecords,
         model,
         epochs,
-        cohort: hasCohort ? cohort as Parameters<typeof startGeneration>[0]['cohort'] : undefined,
+        requirements: reqs,   // new dynamic path (undefined = no cohort)
       })
       const initial = await getGenerationStatus(res.generation_id)
       setGeneration(initial)
       startPolling(res.generation_id)
       toast.success('Generation started!')
-    } catch (e) {
-      toast.error(extractError(e))
+    } catch (err) {
+      toast.error(extractError(err))
     } finally {
       setSubmitting(false)
     }
   }
 
+  // Keep validation errors in sync whenever requirements change
+  function handleRequirementsChange(reqs: CohortRequirement[]) {
+    setRequirements(reqs)
+    // Re-validate: we pass an empty profile map here because deep column
+    // validation already happens inside RequirementCard; this catches
+    // proportion-level contradictions only
+    setValidationErrors(validateRequirements(reqs, new Map()))
+  }
+
   const isRunning = generation && ['pending', 'training', 'generating'].includes(generation.status)
   const isDone    = generation?.status === 'done'
   const isError   = generation?.status === 'error'
+
+  // Extract dynamic cohort report from generation results
+  const cohortReport: CohortRequirementResult[] = (() => {
+    if (!generation?.cohort_results) return []
+    const cr = generation.cohort_results as Record<string, unknown>
+    if (Array.isArray(cr.requirements)) return cr.requirements as CohortRequirementResult[]
+    return []
+  })()
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -113,7 +130,7 @@ export default function Generate() {
         </p>
       </div>
 
-      {/* No dataset — concise prompt */}
+      {/* No dataset prompt */}
       {!preprocessing && (
         <div className="card border-amber-100 bg-amber-50 p-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5">
@@ -126,7 +143,7 @@ export default function Generate() {
         </div>
       )}
 
-      {/* SDV missing — only show this error when the dependency is actually absent */}
+      {/* SDV missing */}
       {sdvMissing && (
         <div className="card border-red-200 bg-red-50 p-4 flex gap-3">
           <ShieldAlert className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
@@ -139,7 +156,7 @@ export default function Generate() {
         </div>
       )}
 
-      {/* Generation progress card */}
+      {/* Generation progress */}
       {(isRunning || isDone || isError) && generation && (
         <div className={`card p-5 space-y-3 ${isError ? 'border-red-200' : isDone ? 'border-clinical-200' : ''}`}>
           <div className="flex items-center justify-between">
@@ -168,8 +185,9 @@ export default function Generate() {
 
           {isError && <p className="text-sm text-red-600">{generation.error_message}</p>}
 
-          {isDone && generation.cohort_results && Object.keys(generation.cohort_results).length > 0 && (
-            <CohortResults results={generation.cohort_results as Record<string, unknown>} />
+          {/* Dynamic cohort accuracy report */}
+          {isDone && cohortReport.length > 0 && (
+            <CohortReport results={cohortReport} />
           )}
 
           {isDone && (
@@ -185,7 +203,7 @@ export default function Generate() {
         </div>
       )}
 
-      {/* Config form — hidden while running */}
+      {/* Config form */}
       {!isRunning && (
         <form onSubmit={handleSubmit} className="space-y-5">
 
@@ -203,7 +221,6 @@ export default function Generate() {
           {/* Generation settings */}
           <div className="card p-5 space-y-4">
             <h2 className="section-title">Generation Settings</h2>
-
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="label">Synthetic records</label>
@@ -226,7 +243,6 @@ export default function Generate() {
               </div>
             </div>
 
-            {/* Model selector — compact pill style */}
             <div>
               <label className="label">Model</label>
               <div className="flex gap-2 flex-wrap">
@@ -251,60 +267,35 @@ export default function Generate() {
             </div>
           </div>
 
-          {/* Cohort requirements */}
+          {/* Dynamic Cohort Requirements */}
           <div className="card p-5 space-y-4">
-            <div className="flex items-center gap-2">
-              <Users className="w-4 h-4 text-slate-400" />
-              <h2 className="section-title">Cohort Requirements</h2>
-              <span className="badge-gray text-xs ml-1">Optional</span>
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="section-title">Cohort Requirements</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Features and values come from your uploaded dataset — nothing is hard-coded.
+                </p>
+              </div>
+              <span className="badge-gray text-xs">Optional</span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="label">Older patients (age ≥ 60) %</label>
-                <input
-                  type="number" min={0} max={100} placeholder="e.g. 40"
-                  value={olderPct}
-                  onChange={e => setOlderPct(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="input"
-                />
-              </div>
-              <div>
-                <label className="label">Diabetic patients %</label>
-                <input
-                  type="number" min={0} max={100} placeholder="e.g. 30"
-                  value={diabeticPct}
-                  onChange={e => setDiabeticPct(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="input"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="label">Activity level distribution %</label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { label: 'Low',    val: actLow,  set: setActLow  },
-                  { label: 'Medium', val: actMed,  set: setActMed  },
-                  { label: 'High',   val: actHigh, set: setActHigh },
-                ].map(({ label, val, set }) => (
-                  <div key={label}>
-                    <label className="text-xs text-slate-500 mb-1 block">{label}</label>
-                    <input
-                      type="number" min={0} max={100} placeholder="e.g. 33"
-                      value={val}
-                      onChange={e => set(e.target.value === '' ? '' : Number(e.target.value))}
-                      className="input"
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
+            {dataset?.id && preprocessing ? (
+              <CohortBuilder
+                datasetId={dataset.id}
+                requirements={requirements}
+                onChange={handleRequirementsChange}
+                errors={validationErrors}
+              />
+            ) : (
+              <p className="text-xs text-slate-400">
+                Upload and preprocess a dataset to configure cohort requirements.
+              </p>
+            )}
           </div>
 
           <button
             type="submit"
-            disabled={submitting || !preprocessing || sdvMissing}
+            disabled={submitting || !preprocessing || sdvMissing || validationErrors.length > 0}
             className="btn-primary w-full py-3 text-base justify-center"
           >
             {submitting ? (
@@ -313,34 +304,14 @@ export default function Generate() {
               <><Cpu className="w-5 h-5" />Generate {numRecords.toLocaleString()} Synthetic Records</>
             )}
           </button>
+
+          {validationErrors.length > 0 && (
+            <p className="text-xs text-red-600 text-center">
+              Fix {validationErrors.length} cohort error{validationErrors.length > 1 ? 's' : ''} above before generating.
+            </p>
+          )}
         </form>
       )}
-    </div>
-  )
-}
-
-function CohortResults({ results }: { results: Record<string, unknown> }) {
-  const rows: { label: string; requested: unknown; actual: unknown; diff: unknown }[] = []
-  if (results.older_pct_requested !== undefined)
-    rows.push({ label: 'Older (≥60)', requested: results.older_pct_requested, actual: results.older_pct_actual, diff: results.older_pct_diff })
-  if (results.diabetic_pct_requested !== undefined)
-    rows.push({ label: 'Diabetic', requested: results.diabetic_pct_requested, actual: results.diabetic_pct_actual, diff: results.diabetic_pct_diff })
-  if (!rows.length) return null
-  return (
-    <div className="pt-1">
-      <p className="text-xs font-semibold text-slate-500 mb-1.5">Cohort accuracy</p>
-      <div className="space-y-1">
-        {rows.map(r => (
-          <div key={String(r.label)} className="flex items-center gap-4 text-xs text-slate-600">
-            <span className="w-20 font-medium">{String(r.label)}</span>
-            <span>Requested <strong>{String(r.requested)}%</strong></span>
-            <span>Achieved <strong>{String(r.actual)}%</strong></span>
-            <span className={Number(r.diff) > 5 ? 'text-amber-600' : 'text-clinical-600'}>
-              Δ {String(r.diff)}%
-            </span>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }

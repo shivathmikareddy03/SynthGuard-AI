@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from app.config import settings
 from app.database import create_tables
 from app.api.routes import dataset, generate, validation, privacy, export
+from app.api.routes import cohort_profile as cohort_profile_route
 
 logger = logging.getLogger("sh405")
 
@@ -119,6 +120,7 @@ app.add_middleware(
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 app.include_router(dataset.router,    prefix="/api/dataset",    tags=["Dataset"])
+app.include_router(cohort_profile_route.router, prefix="/api/dataset", tags=["Dataset"])
 app.include_router(generate.router,   prefix="/api",            tags=["Generation"])
 app.include_router(validation.router, prefix="/api/validation", tags=["Validation"])
 app.include_router(privacy.router,    prefix="/api/privacy",    tags=["Privacy"])
