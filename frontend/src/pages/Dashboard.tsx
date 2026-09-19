@@ -316,6 +316,56 @@ export default function Dashboard() {
 }
 
 function CohortAccuracyTable({ results }: { results: Record<string, unknown> }) {
+  // ── New dynamic path: results.requirements is an array ────────────────────
+  if (Array.isArray(results.requirements) && results.requirements.length > 0) {
+    const reqs = results.requirements as Array<{
+      label: string
+      requested_pct: number
+      generated_pct: number | null
+      diff_pct: number | null
+      status: string
+    }>
+    return (
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-slate-50 text-xs text-slate-500 uppercase tracking-wide">
+              <th className="px-4 py-2 text-left">Requirement</th>
+              <th className="px-4 py-2 text-right">Requested</th>
+              <th className="px-4 py-2 text-right">Achieved</th>
+              <th className="px-4 py-2 text-right">Difference</th>
+              <th className="px-4 py-2 text-right">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {reqs.map((r, i) => {
+              const diff = r.diff_pct ?? 0
+              return (
+                <tr key={i}>
+                  <td className="px-4 py-2 font-medium">{r.label}</td>
+                  <td className="px-4 py-2 text-right">{r.requested_pct?.toFixed(1)}%</td>
+                  <td className="px-4 py-2 text-right">{r.generated_pct != null ? `${r.generated_pct.toFixed(1)}%` : '—'}</td>
+                  <td className="px-4 py-2 text-right">{r.diff_pct != null ? `${r.diff_pct.toFixed(1)}pp` : '—'}</td>
+                  <td className="px-4 py-2 text-right">
+                    {r.status === 'column_missing'
+                      ? <span className="badge-red">Missing</span>
+                      : diff <= 2
+                      ? <span className="badge-green">Excellent</span>
+                      : diff <= 5
+                      ? <span className="badge-blue">Good</span>
+                      : <span className="badge-yellow">Review</span>
+                    }
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    )
+  }
+
+  // ── Legacy path: flat keys older_pct_requested / diabetic_pct_requested ───
   const rows: { label: string; requested: number; actual: number; diff: number }[] = []
   if (results.older_pct_requested !== undefined) {
     rows.push({ label: 'Older patients (age ≥ 60)', requested: Number(results.older_pct_requested), actual: Number(results.older_pct_actual), diff: Number(results.older_pct_diff) })
