@@ -5,8 +5,8 @@ import { Cpu, ArrowRight, CheckCircle, AlertCircle, Activity, ShieldAlert } from
 import { startGeneration, getGenerationStatus, checkHealth, extractError, type HealthResponse } from '../services/api'
 import { useStore } from '../store'
 import ProgressBar from '../components/ProgressBar'
-import CohortBuilder, { CohortReport, validateRequirements } from '../components/CohortBuilder'
-import type { CohortRequirement, CohortRequirementResult } from '../types'
+import CohortBuilder, { CohortReport } from '../components/CohortBuilder'
+import type { CohortRequirement, CohortRequirementResult, ValidationError } from '../types'
 
 const MODELS = [
   { value: 'CTGAN',          label: 'CTGAN',           desc: 'Conditional GAN — best quality.' },
@@ -100,13 +100,11 @@ export default function Generate() {
     }
   }
 
-  // Keep validation errors in sync whenever requirements change
-  function handleRequirementsChange(reqs: CohortRequirement[]) {
+  // Validation errors bubble up directly from CohortBuilder which has the
+  // real profile map — never pass an empty map here.
+  function handleRequirementsChange(reqs: CohortRequirement[], errs: ValidationError[]) {
     setRequirements(reqs)
-    // Re-validate: we pass an empty profile map here because deep column
-    // validation already happens inside RequirementCard; this catches
-    // proportion-level contradictions only
-    setValidationErrors(validateRequirements(reqs, new Map()))
+    setValidationErrors(errs)
   }
 
   const isRunning = generation && ['pending', 'training', 'generating'].includes(generation.status)

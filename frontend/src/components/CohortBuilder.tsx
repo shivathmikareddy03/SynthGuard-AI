@@ -9,7 +9,7 @@
  *     column's actual data.
  *   - No healthcare column names are hard-coded anywhere in this file.
  */
-import { useEffect, useState, useId } from 'react'
+import { useEffect, useState } from 'react'
 import { Plus, Trash2, Search, AlertCircle, CheckCircle, ChevronDown } from 'lucide-react'
 import { getCohortProfile, extractError } from '../services/api'
 import type {
@@ -18,6 +18,7 @@ import type {
   CohortRequirement,
   CohortRequirementResult,
   ColumnKind,
+  ValidationError,
 } from '../types'
 import clsx from 'clsx'
 
@@ -66,8 +67,6 @@ function defaultOperator(kind: ColumnKind): CohortOperator {
 function uid() { return Math.random().toString(36).slice(2, 10) }
 
 // ── Validation ────────────────────────────────────────────────────────────────
-
-interface ValidationError { id: string; message: string }
 
 function validateRequirements(
   reqs: CohortRequirement[],
@@ -502,7 +501,7 @@ export function CohortReport({ results }: { results: CohortRequirementResult[] }
 interface Props {
   datasetId: string
   requirements: CohortRequirement[]
-  onChange: (reqs: CohortRequirement[]) => void
+  onChange: (reqs: CohortRequirement[], errors: ValidationError[]) => void
   errors: ValidationError[]
 }
 
@@ -516,12 +515,26 @@ export default function CohortBuilder({ datasetId, requirements, onChange, error
     setLoading(true)
     setLoadError(null)
     getCohortProfile(datasetId)
-      .then(resp => setProfile(resp.columns))
+      .then(resp => {
+        setProfile(resp.columns)
+        // Re-validate any existing requirements now that we have the real profile
+        if (requirements.length > 0) {
+          const pm = new Map(resp.columns.map(c => [c.name, c]))
+          onChange(requirements, validateRequirements(requirements, pm))
+        }
+      })
       .catch(e => setLoadError(extractError(e)))
       .finally(() => setLoading(false))
-  }, [datasetId])
+  }, [datasetId]) // eslint-disable-line
 
   const errorMap = new Map(errors.map(e => [e.id, e.message]))
+
+  // Compute errors with the real profileMap so validation always has the
+  // actual column list — never an empty map.
+  function computeErrors(reqs: CohortRequirement[]): ValidationError[] {
+    const pm = new Map(profile.map(c => [c.name, c]))
+    return validateRequirements(reqs, pm)
+  }
 
   function addRequirement() {
     if (profile.length === 0) return
@@ -530,21 +543,24 @@ export default function CohortBuilder({ datasetId, requirements, onChange, error
     const val = firstNumeric.kind === 'numerical'
       ? (firstNumeric.min ?? 0)
       : (firstNumeric.ordinal_order?.[0] ?? firstNumeric.unique_values?.[0] ?? '')
-    onChange([...requirements, {
+    const next = [...requirements, {
       id:                uid(),
       feature:           firstNumeric.name,
       operator:          op,
       value:             val,
       target_proportion: 0.3,
-    }])
+    }]
+    onChange(next, computeErrors(next))
   }
 
   function updateRequirement(id: string, updated: CohortRequirement) {
-    onChange(requirements.map(r => r.id === id ? updated : r))
+    const next = requirements.map(r => r.id === id ? updated : r)
+    onChange(next, computeErrors(next))
   }
 
   function removeRequirement(id: string) {
-    onChange(requirements.filter(r => r.id !== id))
+    const next = requirements.filter(r => r.id !== id)
+    onChange(next, computeErrors(next))
   }
 
   if (loading) {
@@ -621,4 +637,3 @@ export default function CohortBuilder({ datasetId, requirements, onChange, error
 }
 
 export { validateRequirements }
-export type { ValidationError }

@@ -115,6 +115,11 @@ export interface CohortRequirementResult {
   status: 'pass' | 'warn' | 'column_missing'
 }
 
+export interface ValidationError {
+  id: string
+  message: string
+}
+
 // Legacy cohort config (kept for backward compatibility)
 export interface CohortConfig {
   older_patients_pct?: number
