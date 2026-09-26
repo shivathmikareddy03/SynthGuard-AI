@@ -44,7 +44,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <Activity className="w-4 h-4 text-white" />
             </div>
             <div>
-              <p className="text-sm font-bold text-slate-900 leading-none">SH-405</p>
+              <p className="text-sm font-bold text-slate-900 leading-none">SynthGen</p>
               <p className="text-[10px] text-slate-500 mt-0.5">Synthetic Patient Data</p>
             </div>
           </div>

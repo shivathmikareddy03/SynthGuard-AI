@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-logger = logging.getLogger("sh405.cohort")
+logger = logging.getLogger("synthgen.cohort")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -227,6 +227,28 @@ def apply_dynamic_cohort(
         diff     = round(abs(target_p - actual_p) * 100, 2)
         status   = "pass" if diff <= 5 else "warn"
 
+        # Compute data distribution for graphing based on full domain
+        global_col_data = synth_df[feature].dropna()
+        col_data = result[feature].dropna()
+        distribution = None
+        if not global_col_data.empty:
+            if pd.api.types.is_numeric_dtype(global_col_data) and operator not in ("equal", "in_values"):
+                domain_min, domain_max = float(global_col_data.min()), float(global_col_data.max())
+                if domain_min == domain_max:
+                    domain_max = domain_min + 1.0
+                counts, bin_edges = np.histogram(col_data, bins=10, range=(domain_min, domain_max))
+                distribution = {
+                    "type": "numerical",
+                    "bins": [{"min": round(bin_edges[i], 2), "max": round(bin_edges[i+1], 2), "count": int(counts[i])} for i in range(len(counts))]
+                }
+            else:
+                global_cats = global_col_data.unique()
+                val_counts = col_data.value_counts().to_dict()
+                distribution = {
+                    "type": "categorical",
+                    "bins": [{"label": str(k), "count": int(val_counts.get(k, 0))} for k in global_cats]
+                }
+
         report.append({
             "feature":        feature,
             "operator":       operator,
@@ -236,6 +258,7 @@ def apply_dynamic_cohort(
             "generated_pct":  round(actual_p * 100, 2),
             "diff_pct":       diff,
             "status":         status,
+            "distribution":   distribution,
         })
 
     return result.reset_index(drop=True), report

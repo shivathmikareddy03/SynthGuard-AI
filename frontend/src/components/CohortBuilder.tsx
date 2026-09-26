@@ -11,6 +11,7 @@
  */
 import { useEffect, useState } from 'react'
 import { Plus, Trash2, Search, AlertCircle, CheckCircle, ChevronDown } from 'lucide-react'
+import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { getCohortProfile, extractError } from '../services/api'
 import type {
   CohortColumnProfile,
@@ -459,7 +460,7 @@ export function CohortReport({ results }: { results: CohortRequirementResult[] }
   return (
     <div>
       <p className="text-xs font-semibold text-slate-500 mb-2">Cohort accuracy</p>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto mb-4">
         <table className="w-full text-xs">
           <thead>
             <tr className="bg-slate-50 text-slate-500 uppercase tracking-wide">
@@ -492,6 +493,36 @@ export function CohortReport({ results }: { results: CohortRequirementResult[] }
           </tbody>
         </table>
       </div>
+
+      {results.some(r => r.distribution) && (
+        <div className="mt-4">
+          <p className="text-xs font-semibold text-slate-500 mb-3">Feature Distributions (Generated Data)</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {results.filter(r => r.distribution).map((r, i) => {
+              const data = r.distribution!.type === 'numerical' 
+                ? r.distribution!.bins.map((b: any) => ({ name: `${b.min}-${b.max}`, count: b.count }))
+                : r.distribution!.bins.map((b: any) => ({ name: b.label, count: b.count }))
+                
+              return (
+                <div key={i} className="border border-slate-200 rounded-md p-3 bg-white shadow-sm">
+                  <p className="text-xs font-medium text-slate-700 mb-2 text-center truncate" title={r.label}>{r.label}</p>
+                  <div className="h-32">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={data} margin={{ top: 5, right: 5, bottom: 20, left: -20 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} angle={-30} textAnchor="end" height={25} interval={0} />
+                        <YAxis tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} width={40} />
+                        <RechartsTooltip contentStyle={{ fontSize: '11px', borderRadius: '6px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} cursor={{ fill: '#f1f5f9' }} />
+                        <Bar dataKey="count" fill="#6366f1" radius={[2, 2, 0, 0]} maxBarSize={40} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

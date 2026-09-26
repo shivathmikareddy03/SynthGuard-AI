@@ -14,7 +14,7 @@ from app.database import DatasetRecord, GenerationRecord, ValidationRecord, get_
 from app.services.validation import run_validation
 
 router = APIRouter()
-logger = logging.getLogger("sh405.routes.validation")
+logger = logging.getLogger("synthgen.routes.validation")
 
 
 def _resolve_source_path(gen_record: GenerationRecord, dataset: DatasetRecord) -> str:

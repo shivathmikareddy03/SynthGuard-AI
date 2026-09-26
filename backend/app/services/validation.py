@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from app.database import ValidationRecord
 from app.utils.ids import new_id
 
-logger = logging.getLogger("sh405.validation")
+logger = logging.getLogger("synthgen.validation")
 
 # Maximum synthetic rows passed to ks_2samp (2 × source size).
 # Prevents inflated power from large synthetic pools swamping a small source.

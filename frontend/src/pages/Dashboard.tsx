@@ -303,6 +303,15 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Physiological Constraints results */}
+      {generation.cohort_results && (generation.cohort_results as Record<string, any>).constraints && (
+        <div className="card p-6">
+          <h2 className="section-title mb-1">Physiological Validation</h2>
+          <p className="text-xs text-slate-400 mb-4">Post-generation constraint rules applied</p>
+          <PhysiologicalValidationTable constraints={(generation.cohort_results as Record<string, any>).constraints} />
+        </div>
+      )}
+
       {/* Disclaimer */}
       <div className="card border-slate-200 bg-slate-50 p-4 flex gap-3">
         <AlertTriangle className="w-4 h-4 text-slate-400 flex-shrink-0 mt-0.5" />
@@ -405,6 +414,75 @@ function CohortAccuracyTable({ results }: { results: Record<string, unknown> }) 
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function PhysiologicalValidationTable({ constraints }: { constraints: any }) {
+  const [showExamples, setShowExamples] = useState(false)
+  
+  const violations = Object.entries(constraints.violations_by_rule || {})
+    .sort((a: any, b: any) => b[1] - a[1])
+  
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="bg-slate-50 p-4 rounded-lg">
+          <p className="text-sm font-medium text-slate-700">Valid records</p>
+          <p className="text-2xl font-bold text-green-600">✓ {constraints.valid_records}</p>
+          <p className="text-xs text-slate-400 mt-1">{(constraints.valid_records / constraints.generated_records * 100).toFixed(1)}%</p>
+        </div>
+        <div className="bg-slate-50 p-4 rounded-lg">
+          <p className="text-sm font-medium text-slate-700">Records with warnings</p>
+          <p className="text-2xl font-bold text-amber-500">⚠ {constraints.warnings}</p>
+          <p className="text-xs text-slate-400 mt-1">{constraints.warning_rate}%</p>
+        </div>
+        <div className="bg-slate-50 p-4 rounded-lg">
+          <p className="text-sm font-medium text-slate-700">Rejected records</p>
+          <p className="text-2xl font-bold text-red-600">✕ {constraints.rejected_records}</p>
+          <p className="text-xs text-slate-400 mt-1">{constraints.rejection_rate}%</p>
+        </div>
+        <div className="bg-slate-50 p-4 rounded-lg">
+          <p className="text-sm font-medium text-slate-700">Repaired records</p>
+          <p className="text-2xl font-bold text-blue-600">{constraints.repaired_records}</p>
+        </div>
+      </div>
+      
+      {violations.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-slate-700 mb-2">Top Constraint Violations</h3>
+          <ul className="space-y-2">
+            {violations.map(([rule, count]: any) => (
+              <li key={rule} className="flex justify-between items-center text-sm p-2 bg-slate-50 rounded">
+                <span className="font-medium text-slate-700">{rule}</span>
+                <span className="bg-slate-200 text-slate-700 py-0.5 px-2 rounded-full text-xs font-semibold">{count}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      
+      {constraints.rejected_examples && constraints.rejected_examples.length > 0 && (
+        <div>
+          <button 
+            onClick={() => setShowExamples(!showExamples)}
+            className="text-sm text-brand-600 hover:text-brand-700 font-medium"
+          >
+            {showExamples ? "Hide validation reasons" : "View validation reasons (examples)"}
+          </button>
+          
+          {showExamples && (
+            <div className="mt-3 p-4 bg-red-50 border border-red-100 rounded-lg space-y-3">
+              {constraints.rejected_examples.map((ex: any, i: number) => (
+                <div key={i} className="text-sm text-red-800">
+                  <span className="font-semibold text-red-900">Row {ex.row_index}</span> — {ex.violation}
+                  <p className="text-red-700 mt-0.5 ml-1">{ex.reason}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

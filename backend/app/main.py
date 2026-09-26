@@ -9,7 +9,7 @@ from app.database import create_tables
 from app.api.routes import dataset, generate, validation, privacy, export
 from app.api.routes import cohort_profile as cohort_profile_route
 
-logger = logging.getLogger("sh405")
+logger = logging.getLogger("synthgen")
 
 
 def _check_dependencies() -> dict:
@@ -26,7 +26,7 @@ def _check_dependencies() -> dict:
     }
 
     print("=" * 60)
-    print("  SH-405 Backend — Dependency Check")
+    print("  SynthGen Backend — Dependency Check")
     print("=" * 60)
 
     # SDV core
@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="SH-405 Synthetic Patient Data Platform",
+    title="SynthGen Synthetic Patient Data Platform",
     description=(
         "Privacy-preserving synthetic healthcare data generation using SDV/CTGAN. "
         "This is a research prototype. Synthetic data should not be considered "
@@ -131,7 +131,7 @@ app.include_router(export.router,     prefix="/api/export",     tags=["Export"])
 def health():
     return {
         "status": "ok",
-        "service": "SH-405 Backend",
+        "service": "SynthGen Backend",
         "dependencies": {
             "sdv_installed":             _dep_status.get("sdv_installed", False),
             "sdv_version":               _dep_status.get("sdv_version"),

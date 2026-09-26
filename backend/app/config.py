@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     BACKEND_PORT: int = 8000
     UPLOAD_DIR: str = "uploads"
     EXPORT_DIR: str = "exports"
-    DATABASE_URL: str = "sqlite:///./sh405.db"
+    DATABASE_URL: str = "sqlite:///./synthgen.db"
     MAX_UPLOAD_SIZE_MB: int = 50
     CTGAN_EPOCHS: int = 300
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"

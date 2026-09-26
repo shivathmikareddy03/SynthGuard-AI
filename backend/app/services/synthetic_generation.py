@@ -17,7 +17,7 @@ from app.database import GenerationRecord
 from app.services.cohort import apply_cohort_requirements
 from app.utils.ids import new_id
 
-logger = logging.getLogger("sh405.generation")
+logger = logging.getLogger("synthgen.generation")
 
 
 def _load_sdv():
@@ -346,6 +346,12 @@ def run_generation(
 
         synthetic_df = synthetic_df.head(num_records).reset_index(drop=True)
 
+        # ── 6b. Physiological Constraint Enforcement ────────────────────────────
+        _progress(85, "Applying physiological constraints…")
+        from app.services.physiological_constraints import run_physiological_constraints
+        synthetic_df, constraint_report = run_physiological_constraints(synthetic_df)
+        cohort_results["constraints"] = constraint_report
+        
         # ── 7. Add synt_id if a linkage key was in the source ───────────────
         # Detect whether the original preprocessed CSV had a linkage key.
         # If so, assign new SYN-XXXXXX values as the synt_id column.

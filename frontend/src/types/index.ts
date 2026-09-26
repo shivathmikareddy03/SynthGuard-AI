@@ -113,6 +113,10 @@ export interface CohortRequirementResult {
   generated_pct: number | null
   diff_pct: number | null
   status: 'pass' | 'warn' | 'column_missing'
+  distribution?: {
+    type: 'numerical' | 'categorical'
+    bins: any[]
+  }
 }
 
 export interface ValidationError {

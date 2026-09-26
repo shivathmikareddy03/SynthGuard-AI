@@ -78,7 +78,7 @@ def print_ks_table(val):
               f"p={ks_p:.6f if ks_p is not None else '?':>10}  "
               f"{status.upper()}{cohort}")
 
-print("\n===  KS Test Investigation — SH-405  ===")
+print("\n===  KS Test Investigation — SynthGen  ===")
 print("(no cohort constraints; testing pure distribution fidelity)\n")
 
 ds_id = upload_demo()

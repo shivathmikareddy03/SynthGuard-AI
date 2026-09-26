@@ -30,7 +30,7 @@ export default function Landing() {
       <div className="text-center mb-12">
         <div className="inline-flex items-center gap-2 bg-brand-50 text-brand-700 px-4 py-1.5 rounded-full text-xs font-semibold mb-5 uppercase tracking-wide">
           <Activity className="w-3.5 h-3.5" />
-          SH-405 Research Prototype
+          SynthGen Research Prototype
         </div>
         <h1 className="text-4xl font-bold text-slate-900 leading-tight mb-3">
           Privacy-Preserving Synthetic<br />Patient Data Platform

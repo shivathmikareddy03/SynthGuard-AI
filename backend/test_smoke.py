@@ -5,7 +5,7 @@ Run: python test_smoke.py
 import sys, os
 sys.path.insert(0, ".")
 
-print("=== SH-405 Backend Smoke Test ===\n")
+print("=== SynthGen Backend Smoke Test ===\n")
 
 # 1. Config
 from app.config import settings
